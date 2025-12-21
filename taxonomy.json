@@ -1,0 +1,38 @@
+{
+  "edges": [
+    [
+      "Mystery",
+      "CrimeFiction"
+    ],
+    [
+      "CrimeFiction",
+      "Fiction"
+    ],
+    [
+      "ScienceFiction",
+      "Fiction"
+    ],
+    [
+      "Fantasy",
+      "Fiction"
+    ],
+    [
+      "ChildrensFantasy",
+      "Fantasy"
+    ],
+    [
+      "History",
+      "NonFiction"
+    ],
+    [
+      "Science",
+      "NonFiction"
+    ]
+  ],
+  "disjoint": [
+    [
+      "Fiction",
+      "NonFiction"
+    ]
+  ]
+}

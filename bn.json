@@ -1,0 +1,85 @@
+{
+  "categories": [
+    "Mystery",
+    "ScienceFiction",
+    "Fantasy",
+    "ChildrensFantasy",
+    "History",
+    "Science"
+  ],
+  "priors": {
+    "Mystery": 0.17,
+    "ScienceFiction": 0.17,
+    "Fantasy": 0.17,
+    "ChildrensFantasy": 0.16,
+    "History": 0.16,
+    "Science": 0.17
+  },
+  "features": [
+    "HasMurder",
+    "HasSpaceship",
+    "HasMagic",
+    "SubjectCrime",
+    "SubjectSpace",
+    "SubjectHistory",
+    "AudienceChildren"
+  ],
+  "cpt": {
+    "HasMurder": {
+      "Mystery": 0.85,
+      "ScienceFiction": 0.05,
+      "Fantasy": 0.05,
+      "ChildrensFantasy": 0.01,
+      "History": 0.01,
+      "Science": 0.01
+    },
+    "HasSpaceship": {
+      "Mystery": 0.02,
+      "ScienceFiction": 0.85,
+      "Fantasy": 0.05,
+      "ChildrensFantasy": 0.05,
+      "History": 0.01,
+      "Science": 0.02
+    },
+    "HasMagic": {
+      "Mystery": 0.02,
+      "ScienceFiction": 0.02,
+      "Fantasy": 0.8,
+      "ChildrensFantasy": 0.7,
+      "History": 0.01,
+      "Science": 0.01
+    },
+    "SubjectCrime": {
+      "Mystery": 0.8,
+      "ScienceFiction": 0.05,
+      "Fantasy": 0.02,
+      "ChildrensFantasy": 0.01,
+      "History": 0.01,
+      "Science": 0.01
+    },
+    "SubjectSpace": {
+      "Mystery": 0.01,
+      "ScienceFiction": 0.8,
+      "Fantasy": 0.02,
+      "ChildrensFantasy": 0.05,
+      "History": 0.01,
+      "Science": 0.01
+    },
+    "SubjectHistory": {
+      "Mystery": 0.01,
+      "ScienceFiction": 0.01,
+      "Fantasy": 0.01,
+      "ChildrensFantasy": 0.01,
+      "History": 0.85,
+      "Science": 0.1
+    },
+    "AudienceChildren": {
+      "Mystery": 0.05,
+      "ScienceFiction": 0.1,
+      "Fantasy": 0.2,
+      "ChildrensFantasy": 0.85,
+      "History": 0.1,
+      "Science": 0.1
+    }
+  }
+}
