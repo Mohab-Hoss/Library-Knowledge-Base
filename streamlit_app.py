@@ -217,9 +217,16 @@ AUD_ALIASES = {
     "ya": "YoungAdult", "young adult": "YoungAdult",
     "adult": "Adult"
 }
+SUBJECT_SYNONYMS = {
+    "adventure": "Adventure", "space": "Space", "crime": "Crime", "urban": "Urban",
+    "myth": "Myth", "education": "Education", "romance": "Romance",
+    "friendship": "Friendship", "dragon": "Dragon", "quest": "Quest", "magic": "Magic",
+    "physics": "Physics", "history": "History", "science": "Science"
+}
 STOPWORDS = {
     "a","an","the","book","books","list","show","find","every","all","any","of","with","about",
-    "me","please","you","for","after","before","since","between","and","in","on","from","to"
+    "me","please","you","for","after","before","since","between","and","in","on","from","to",
+    "called","titled","title","showing","give","tell","tell me","explain","why","is","it","movie","novel"
 }
 
 def _clean(s: str) -> str:
@@ -239,11 +246,11 @@ def _parse_years(text: str):
     t = _clean(text)
     y_min = y_max = None
     m = re.search(r"after\s+(\d{4})", t)
-    if m: y_min = int(m.group(1)) + 1        # after 2015 -> >=2016
+    if m: y_min = int(m.group(1)) + 1
     m = re.search(r"since\s+(\d{4})", t)
-    if m: y_min = int(m.group(1))            # since 2015 -> >=2015
+    if m: y_min = int(m.group(1))
     m = re.search(r"before\s+(\d{4})", t)
-    if m: y_max = int(m.group(1)) - 1        # before 2020 -> <=2019
+    if m: y_max = int(m.group(1)) - 1
     m = re.search(r"between\s+(\d{4})\s+and\s+(\d{4})", t)
     if m: y_min, y_max = int(m.group(1)), int(m.group(2))
     m = re.search(r"\bin\s+(\d{4})", t)
@@ -252,8 +259,72 @@ def _parse_years(text: str):
     return y_min, y_max
 
 def _extract_terms(text: str):
-    toks = [w for w in _clean(text).split() if len(w) > 3 and w not in STOPWORDS]
+    toks = [w for w in _clean(text).split() if len(w) > 2 and w not in STOPWORDS]
     return toks
+
+def _extract_title(text: str):
+    # quoted
+    m = re.search(r"'([^']+)'", text) or re.search(r"\"([^\"]+)\"", text)
+    if m: return m.group(1).strip()
+    # titled/called X
+    m = re.search(r"\b(?:titled|called)\s+([A-Za-z0-9][^,.;]+)", text, flags=re.IGNORECASE)
+    if m: return m.group(1).strip()
+    return None
+
+def _extract_author(text: str):
+    m = re.search(r"\bby\s+([A-Za-z][A-Za-z .'-]+)", text, flags=re.IGNORECASE)
+    if m: return m.group(1).strip()
+    return None
+
+def _find_row_by_title(title, rows):
+    if not title: return None
+    tnorm = _clean(title).strip()
+    best = None; best_score = 0
+    for r in rows:
+        rtitle = r.get("title","")
+        rnorm = _clean(rtitle).strip()
+        if rnorm == tnorm: 
+            return r
+        # token overlap
+        a = set(tnorm.split()); b = set(rnorm.split())
+        if not a or not b: continue
+        score = len(a & b) / len(a | b)
+        if score > best_score:
+            best_score = score; best = r
+    return best
+
+def _subjects_list(row):
+    return [s.strip() for s in (row.get("subjects","") or "").split(",") if s.strip()]
+
+def _has_negative_subject(text, row):
+    # "not history", "no history"
+    for word in _subjects_list(row):
+        w = word.lower()
+        if re.search(rf"\b(no|not)\s+{re.escape(w)}\b", text.lower()):
+            return True
+    return False
+
+def _render_book_card(row, classification=None):
+    lines = []
+    lines.append(f"**{row.get('title','')}**")
+    lines.append(f"- Authors: {row.get('authors','')}")
+    lines.append(f"- Year: {row.get('year','')}")
+    lines.append(f"- Audience: {row.get('audience','')}")
+    lines.append(f"- Keywords: {row.get('keywords','')}")
+    lines.append(f"- Subjects: {row.get('subjects','')}")
+    if classification:
+        lines.append(f"- Categories: {', '.join(classification['categories']) or '—'}")
+        lines.append(f"- Closure: {', '.join(classification['closure']) or '—'}")
+        if classification["conflicts"]:
+            lines.append("- Conflicts: " + ", ".join([f"{a} vs {b}" for a,b in classification["conflicts"]]))
+        if classification["explanations"]:
+            lines.append("**Why:**")
+            for e in classification["explanations"]:
+                lines.append(f"  - {e}")
+        elif classification["bn_used"]:
+            top = ", ".join([f"{c}:{p:.2f}" for c,p in classification["bn_top"]])
+            lines.append(f"- BN posterior (top): {top}")
+    return "\n".join(lines)
 
 # ========= Chat helpers =========
 def parse_kv(text):
@@ -267,26 +338,52 @@ def intent_and_slots(msg):
     low = t.lower()
     kv = parse_kv(t)
 
-    # explicit intents still supported
+    # explicit intents still supported at start
     if re.match(r'^\s*(classify|add|why|search)\b', low):
         i = low.split()[0]
+        # allow quoted title to populate for why/classify
+        title = _extract_title(t)
+        if title: kv["title"] = title
         return i, kv
 
-    # NL intents (list/show/find…)
+    # ABOUT intent (tell me about "Title")
+    if re.search(r'\btell me about\b', low) or _extract_title(t):
+        kv["title"] = kv.get("title") or _extract_title(t)
+        auth = _extract_author(t)
+        if auth: kv["authors"] = auth
+        return "about", kv
+
+    # WHY intent (explain why ...)
+    if re.search(r'\b(explain|why)\b', low):
+        kv["title"] = kv.get("title") or _extract_title(t)  # may be None; will use context
+        return "why", kv
+
+    # NL search (list/show/find…)
     if re.search(r'\b(list|show|find|give me|lookup|look up|search)\b', low):
         intent = "search"
         cat = _find_category(low)
         y_min, y_max = _parse_years(low)
-        # audience
         audience = None
         for k, v in AUD_ALIASES.items():
-            if k in low:
+            if re.search(rf"\b{k}\b", low):
                 audience = v
                 break
         terms = _extract_terms(low)
         if cat:
             for w in _clean(cat).split():
                 terms = [t for t in terms if t != w]
+        # sorting/limit
+        order = "none"
+        if "newest" in low or "latest" in low: order = "newest"
+        if "oldest" in low: order = "oldest"
+        m = re.search(r'\btop\s+(\d+)\b', low)
+        limit = int(m.group(1)) if m else None
+        # negative subject like "not history"
+        neg_subj = None
+        for s in SUBJECT_SYNONYMS:
+            if re.search(rf'\b(not|no)\s+{re.escape(s)}\b', low):
+                neg_subj = SUBJECT_SYNONYMS[s]
+                break
         return intent, {
             "terms": terms,
             "text": " ".join(terms),
@@ -294,6 +391,9 @@ def intent_and_slots(msg):
             "audience": audience or "",
             "year_min": y_min,
             "year_max": y_max,
+            "order": order,
+            "limit": limit,
+            "neg_subject": neg_subj,
         }
 
     # fallback: free text search
@@ -302,7 +402,37 @@ def intent_and_slots(msg):
 def chat_handle(message):
     intent, kv = intent_and_slots(message)
 
-    if intent in ("classify","why"):
+    # ====== ABOUT ======
+    if intent == "about":
+        rows = read_books()
+        row = _find_row_by_title(kv.get("title"), rows)
+        if not row:
+            return "I couldn't find that title. Try: `tell me about 'Moon Dagger'`"
+        # remember context
+        st.session_state["last_book"] = row
+        cls = classify_book(row)
+        return _render_book_card(row, cls)
+
+    # ====== WHY (accepts context) ======
+    if intent == "why":
+        row = None
+        if kv.get("title"):
+            row = _find_row_by_title(kv.get("title"), read_books())
+        if not row:
+            row = st.session_state.get("last_book")
+        if not row:
+            return "Say the title, e.g., `why 'Moon Dagger' is fantasy?` or `tell me about 'Moon Dagger'` first."
+        st.session_state["last_book"] = row
+        cls = classify_book(row)
+        # optionally nudge toward a target category mentioned in the question
+        target = _find_category(message) or ("Fantasy" if "fantasy" in _clean(message) else None)
+        lines = [_render_book_card(row, {"categories":cls["categories"],"closure":cls["closure"],"conflicts":cls["conflicts"],"explanations":cls["explanations"],"bn_used":cls["bn_used"],"bn_top":cls["bn_top"]})]
+        if target and target not in cls["closure"]:
+            lines.append(f"\n_Note:_ I didn't classify it as **{target}** based on current rules/features.")
+        return "\n".join(lines)
+
+    # ====== CLASSIFY / ADD (structured) ======
+    if intent in ("classify","why"):  # (explicit why with k=v falls here too)
         book = {
             "title": kv.get("title",""),
             "authors": kv.get("authors",""),
@@ -312,8 +442,9 @@ def chat_handle(message):
             "subjects": kv.get("subjects",""),
         }
         if not (book["title"] or book["keywords"] or book["subjects"]):
-            return ("Please provide at least `title`, `keywords`, or `subjects`.\n"
+            return ("Provide at least `title`, `keywords`, or `subjects`.\n"
                     "Example: `classify title=Moon Dagger; audience=Adult; keywords=magic, quest`")
+        st.session_state["last_book"] = book
         res = classify_book(book)
         lines = [f"**Intent:** {intent}",
                  f"**Categories (leaves):** {', '.join(res['categories']) or '—'}",
@@ -340,15 +471,19 @@ def chat_handle(message):
                     "Example: `add title=Detective Nile; authors=M. Azmi; year=2021; audience=Adult; "
                     "keywords=detective, murder; subjects=Crime`")
         append_book(book)
+        st.session_state["last_book"] = book
         return f"✅ Added **{book['title']}** to catalog."
 
-    # ------- SEARCH (supports NL slots) -------
+    # ====== SEARCH (supports NL slots) ======
     terms   = kv.get("terms") or []
     text    = kv.get("text") or ""
     cat     = kv.get("category") or kv.get("cat") or "Any"
     audience= kv.get("audience","")
     y_min   = kv.get("year_min")
     y_max   = kv.get("year_max")
+    order   = kv.get("order","none")
+    limit   = kv.get("limit")
+    neg_sub = kv.get("neg_subject")
 
     rows = read_books()
     out = []
@@ -356,34 +491,53 @@ def chat_handle(message):
         hay = " ".join([r.get("title",""), r.get("authors",""), r.get("audience",""),
                         r.get("keywords",""), r.get("subjects","")]).lower()
 
-        # require ANY term to appear when terms provided
         if terms and not any(t.lower() in hay for t in terms):
             continue
 
-        # category via KR classification
         if cat and cat != "Any":
             cres = classify_book(r)
             if cat not in cres["closure"]:
                 continue
 
-        # audience filter
         if audience and r.get("audience","") != audience:
             continue
 
-        # year filters
-        try:
-            yr = int(r.get("year", 0))
-        except Exception:
-            yr = 0
+        try: yr = int(r.get("year", 0))
+        except: yr = 0
         if y_min is not None and yr < int(y_min): continue
         if y_max is not None and yr > int(y_max): continue
 
+        if neg_sub and neg_sub.lower() in (r.get("subjects","").lower()):
+            continue
+
         out.append(r)
 
-    if not out:
-        return "No matches. Try: `list children fantasy after 2015` or `find YA sci-fi space`"
+    if order == "newest":
+        out = sorted(out, key=lambda r: int(r.get("year",0) or 0), reverse=True)
+    elif order == "oldest":
+        out = sorted(out, key=lambda r: int(r.get("year",0) or 0))
 
-    md = ["| Title | Authors | Year | Audience | Keywords | Subjects |", "|-|-|-|-|-|-|"]
+    if limit:
+        out = out[:limit]
+
+    if not out:
+        return "No matches. Try: `tell me about 'Moon Dagger'`, `list children fantasy after 2015`, or `find YA sci-fi space top 3 newest`"
+
+    # “query understood” summary
+    understood = []
+    if terms: understood.append(f"terms={terms}")
+    if cat and cat!="Any": understood.append(f"category={cat}")
+    if audience: understood.append(f"audience={audience}")
+    if y_min is not None or y_max is not None: understood.append(f"year_range={[y_min,y_max]}")
+    if order!="none": understood.append(f"sort={order}")
+    if limit: understood.append(f"limit={limit}")
+    if neg_sub: understood.append(f"not_subject={neg_sub}")
+
+    md = []
+    if understood:
+        md.append("_Query understood:_ " + ", ".join(understood) + "\n")
+    md += ["| Title | Authors | Year | Audience | Keywords | Subjects |",
+           "|-|-|-|-|-|-|"]
     for r in out[:20]:
         md.append(f"| {r.get('title','')} | {r.get('authors','')} | {r.get('year','')} | "
                   f"{r.get('audience','')} | {r.get('keywords','')} | {r.get('subjects','')} |")
@@ -396,14 +550,15 @@ tab_chat, tab_catalog = st.tabs(["💬 Chat", "📚 Catalog UI"])
 
 with tab_chat:
     st.markdown("**Talk to your librarian.** Examples:")
-    st.code("""list every Adventure book
-find children fantasy after 2015
-show YA sci-fi space books
-classify title=Moon Dagger; audience=Adult; keywords=magic, quest
-why title=Detective Nile; keywords=detective, murder""")
+    st.code("""tell me about 'Moon Dagger'
+why is it fantasy?
+why 'Starlight Kids' is sci-fi?
+find YA sci-fi space top 3 newest
+list not history after 2015
+classify title=Detective Nile; keywords=detective, murder""")
     if "messages" not in st.session_state:
         st.session_state.messages = [
-            {"role":"assistant","content":"Hi! I can classify, search, explain (why), and add books. Try: `list children fantasy after 2015`"}
+            {"role":"assistant","content":"Hi! Ask things like `tell me about 'Moon Dagger'` or `why is it fantasy?`"}
         ]
     for m in st.session_state.messages:
         with st.chat_message(m["role"]):
@@ -439,6 +594,7 @@ with tab_catalog:
 
     if do_classify:
         res = classify_book(book)
+        st.session_state["last_book"] = book  # make it available for "why is it …?"
         st.subheader("Result")
         st.write("**Categories (leaves):** ", ", ".join(res["categories"]) or "—")
         st.write("**Closure (+ancestors):** ", ", ".join(res["closure"]) or "—")
