@@ -1,7 +1,7 @@
 import streamlit as st
 from kr_core import (
     ensure_data, load_taxonomy, load_bn, read_books, append_book,
-    classify_book, find_by_title, search_catalog
+    classify_book, find_by_title, search_catalog, hierarchy_from_classification
 )
 from nl_parser import parse_message
 
@@ -15,14 +15,35 @@ BN = load_bn()
 # ---------- UI helpers ----------
 def _conf_badge(conf: str):
     colors = {
-        "high": "🟢 High",
-        "medium": "🟡 Medium",
-        "low": "🟠 Low",
-        "uncertain": "⚪ Uncertain"
+        "high": "🟢 High", "medium": "🟡 Medium", "low": "🟠 Low", "uncertain": "⚪ Uncertain"
     }
     return colors.get(conf, conf)
 
-def render_book_md(row, classification=None):
+def render_card_simple(row, classification):
+    """Minimal card like your screenshot."""
+    h = hierarchy_from_classification(classification, CHILD) if classification else None
+    title = row.get('title','')
+    authors = row.get('authors','')
+    lines = []
+    lines.append("**Book Taxonomy Information**")
+    lines.append("```")
+    lines.append(f"Title       : {title}")
+    if authors: lines.append(f"Authors     : {authors}")
+    if classification and h:
+        lines.append(f"Domain      : {h['domain']}")
+        lines.append(f"Category    : {h['category']}")
+        lines.append(f"Sub-Category: {h['subcategory']}")
+        lines.append(f"Path        : {h['path']}")
+        lines.append(f"Confidence  : {_conf_badge(classification['confidence'])}")
+    else:
+        lines.append("Domain      : —")
+        lines.append("Category    : —")
+        lines.append("Sub-Category: —")
+        lines.append("Path        : —")
+    lines.append("```")
+    return "\n".join(lines)
+
+def render_book_verbose(row, classification=None):
     lines = []
     lines.append(f"**{row.get('title','')}**")
     lines.append(f"- Authors: {row.get('authors','')}")
@@ -30,7 +51,6 @@ def render_book_md(row, classification=None):
     lines.append(f"- Audience: {row.get('audience','')}")
     lines.append(f"- Keywords: {row.get('keywords','')}")
     lines.append(f"- Subjects: {row.get('subjects','')}")
-
     if classification:
         cats = ", ".join(classification['categories']) if classification['categories'] else "—"
         lines.append(f"- Categories: {cats}")
@@ -39,9 +59,7 @@ def render_book_md(row, classification=None):
         if classification["conflicts"]:
             lines.append("- Conflicts: " + ", ".join([f"{a} vs {b}" for a,b in classification["conflicts"]]))
         lines.append(f"- Confidence: {_conf_badge(classification['confidence'])}"
-                     + (f" (score≈{classification['confidence_score']:.2f})" if classification['confidence_score'] else ""))
-
-        # Evidence & Why
+                     + (f" (≈{classification['confidence_score']:.2f})" if classification['confidence_score'] else ""))
         ev_rules = classification.get("evidence", {}).get("rules", []) or []
         ev_bn = classification.get("evidence", {}).get("bn_features", []) or []
         if ev_rules or ev_bn or classification["explanations"]:
@@ -52,27 +70,28 @@ def render_book_md(row, classification=None):
                 lines.append(f"  - Matched tokens (rules): {', '.join(ev_rules)}")
             if ev_bn:
                 lines.append(f"  - BN features: {', '.join(ev_bn)}")
-
-        # BN table
         if classification["bn_used"] and classification["bn_top"]:
             lines.append("")
-            lines.append("_BN posterior (top candidates):_  " +
+            lines.append("_BN posterior (top):_  " +
                          ", ".join([f"{c}:{p:.2f}" for c,p in classification["bn_top"]]))
-
         if classification["confidence"] == "uncertain":
-            lines.append("\n_Add more evidence in **Keywords** or **Subjects** (e.g., 'magic', 'space', 'history') to improve confidence._")
+            lines.append("\n_Add more evidence in **Keywords** or **Subjects** (e.g., 'magic', 'space', 'history')._")
     return "\n".join(lines)
 
 # ---------- UI (Two Tabs) ----------
 tab_chat, tab_catalog = st.tabs(["💬 Chat", "📚 Catalog UI"])
 
 with tab_chat:
-    st.markdown("**Talk to your librarian.** Examples:")
-    st.code("""tell me about 'Moon Dagger'
+    colA, colB = st.columns([1,1])
+    with colA:
+        st.markdown("**Talk to your librarian.** Examples:")
+        st.code("""tell me about 'Moon Dagger'
 why is it fantasy?
 find YA sci-fi space top 3 newest
 list not history after 2015
 classify title=Detective Nile; audience=Adult; keywords=detective, murder""")
+    with colB:
+        SIMPLE = st.toggle("Simple result view", value=True)
 
     if "messages" not in st.session_state:
         st.session_state.messages = [
@@ -100,7 +119,7 @@ classify title=Detective Nile; audience=Adult; keywords=detective, murder""")
             else:
                 st.session_state.last_book = row
                 cls = classify_book(row, PARENT, DISJOINT, BN)
-                reply = render_book_md(row, cls)
+                reply = render_card_simple(row, cls) if SIMPLE else render_book_verbose(row, cls)
 
         elif intent == "why":
             row = None
@@ -113,7 +132,7 @@ classify title=Detective Nile; audience=Adult; keywords=detective, murder""")
             else:
                 st.session_state.last_book = row
                 cls = classify_book(row, PARENT, DISJOINT, BN)
-                reply = render_book_md(row, cls)
+                reply = render_card_simple(row, cls) if SIMPLE else render_book_verbose(row, cls)
 
         elif intent == "classify":
             book = {
@@ -130,7 +149,7 @@ classify title=Detective Nile; audience=Adult; keywords=detective, murder""")
             else:
                 st.session_state.last_book = book
                 res = classify_book(book, PARENT, DISJOINT, BN)
-                reply = render_book_md(book, res)
+                reply = render_card_simple(book, res) if SIMPLE else render_book_verbose(book, res)
 
         elif intent == "add":
             book = {
@@ -150,7 +169,7 @@ classify title=Detective Nile; audience=Adult; keywords=detective, murder""")
                 st.session_state.last_book = book
                 reply = f"✅ Added **{book['title']}** to catalog."
 
-        else:  # search (NL or k=v)
+        else:  # search
             rows = read_books()
             out = search_catalog(
                 rows, PARENT, DISJOINT, BN,
@@ -166,27 +185,32 @@ classify title=Detective Nile; audience=Adult; keywords=detective, murder""")
             if not out:
                 reply = "No matches. Try: `list children fantasy after 2015` or `find YA sci-fi space top 3 newest`"
             else:
-                # "query understood" summary
-                understood = []
-                if slots.get("terms"): understood.append(f"terms={slots['terms']}")
-                if slots.get("category") and slots["category"] != "Any": understood.append(f"category={slots['category']}")
-                if slots.get("audience"): understood.append(f"audience={slots['audience']}")
-                if slots.get("year_min") is not None or slots.get("year_max") is not None:
-                    understood.append(f"year_range={[slots.get('year_min'), slots.get('year_max')]}")
-                if slots.get("order","none") != "none": understood.append(f"sort={slots['order']}")
-                if slots.get("limit"): understood.append(f"limit={slots['limit']}")
-                if slots.get("neg_subject"): understood.append(f"not_subject={slots['neg_subject']}")
-
-                md = []
-                if understood:
-                    md.append("_Query understood:_ " + ", ".join(understood) + "\n")
-                md += ["| Title | Authors | Year | Audience | Keywords | Subjects |", "|-|-|-|-|-|-|"]
-                for r in out[:20]:
-                    md.append(f"| {r.get('title','')} | {r.get('authors','')} | {r.get('year','')} | "
-                              f"{r.get('audience','')} | {r.get('keywords','')} | {r.get('subjects','')} |")
-                if len(out) > 20:
-                    md.append(f"\n_Showing 20 of {len(out)} results…_")
-                reply = "\n".join(md)
+                if SIMPLE:
+                    # render up to 10 minimal cards
+                    blocks = []
+                    for r in out[:10]:
+                        cls = classify_book(r, PARENT, DISJOINT, BN)
+                        blocks.append(render_card_simple(r, cls))
+                    more = "" if len(out) <= 10 else f"\n_Showing 10 of {len(out)} results…_"
+                    reply = "\n\n".join(blocks) + more
+                else:
+                    understood = []
+                    if slots.get("terms"): understood.append(f"terms={slots['terms']}")
+                    if slots.get("category") and slots["category"] != "Any": understood.append(f"category={slots['category']}")
+                    if slots.get("audience"): understood.append(f"audience={slots['audience']}")
+                    if slots.get("year_min") is not None or slots.get("year_max") is not None:
+                        understood.append(f"year_range={[slots.get('year_min'), slots.get('year_max')]}")
+                    if slots.get("order","none") != "none": understood.append(f"sort={slots['order']}")
+                    if slots.get("limit"): understood.append(f"limit={slots['limit']}")
+                    if slots.get("neg_subject"): understood.append(f"not_subject={slots['neg_subject']}")
+                    md = []
+                    if understood: md.append("_Query understood:_ " + ", ".join(understood) + "\n")
+                    md += ["| Title | Authors | Year | Audience | Keywords | Subjects |", "|-|-|-|-|-|-|"]
+                    for r in out[:20]:
+                        md.append(f"| {r.get('title','')} | {r.get('authors','')} | {r.get('year','')} | "
+                                  f"{r.get('audience','')} | {r.get('keywords','')} | {r.get('subjects','')} |")
+                    if len(out) > 20: md.append(f"\n_Showing 20 of {len(out)} results…_")
+                    reply = "\n".join(md)
 
         st.session_state.messages.append({"role":"assistant","content":reply})
         with st.chat_message("assistant"): st.markdown(reply)
@@ -216,14 +240,17 @@ with tab_catalog:
     if do_classify:
         res = classify_book(book, PARENT, DISJOINT, BN)
         st.subheader("Result")
-        st.markdown(render_book_md(book, res))
+        if st.toggle("Simple result view (form)", value=True, key="simple_form"):
+            st.markdown(render_card_simple(book, res))
+        else:
+            st.markdown(render_book_verbose(book, res))
 
     if do_save:
         append_book(book)
         st.success("Saved to data/books.csv")
 
     st.markdown("---")
-    st.header("Search Catalog")
+    st.header("Search Catalog (table)")
     q = st.text_input("Search text", "")
     cat = st.selectbox("Filter by Category", ["Any","ScienceFiction","Fantasy","ChildrensFantasy","Mystery","CrimeFiction","History","Science"], index=0)
 
