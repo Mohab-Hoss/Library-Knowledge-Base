@@ -1,7 +1,4 @@
 import streamlit as st
-from pathlib import Path
-import csv
-
 from kr_core import (
     ensure_data, load_taxonomy, load_bn, read_books, append_book,
     classify_book, find_by_title, search_catalog
@@ -15,7 +12,16 @@ ensure_data()
 PARENT, CHILD, DISJOINT = load_taxonomy()
 BN = load_bn()
 
-# ---------- Small helpers (UI-only rendering) ----------
+# ---------- UI helpers ----------
+def _conf_badge(conf: str):
+    colors = {
+        "high": "🟢 High",
+        "medium": "🟡 Medium",
+        "low": "🟠 Low",
+        "uncertain": "⚪ Uncertain"
+    }
+    return colors.get(conf, conf)
+
 def render_book_md(row, classification=None):
     lines = []
     lines.append(f"**{row.get('title','')}**")
@@ -24,18 +30,37 @@ def render_book_md(row, classification=None):
     lines.append(f"- Audience: {row.get('audience','')}")
     lines.append(f"- Keywords: {row.get('keywords','')}")
     lines.append(f"- Subjects: {row.get('subjects','')}")
+
     if classification:
-        lines.append(f"- Categories: {', '.join(classification['categories']) or '—'}")
-        lines.append(f"- Closure: {', '.join(classification['closure']) or '—'}")
+        cats = ", ".join(classification['categories']) if classification['categories'] else "—"
+        lines.append(f"- Categories: {cats}")
+        if classification['categories']:
+            lines.append(f"- Closure: {', '.join(classification['closure']) or '—'}")
         if classification["conflicts"]:
             lines.append("- Conflicts: " + ", ".join([f"{a} vs {b}" for a,b in classification["conflicts"]]))
-        if classification["explanations"]:
+        lines.append(f"- Confidence: {_conf_badge(classification['confidence'])}"
+                     + (f" (score≈{classification['confidence_score']:.2f})" if classification['confidence_score'] else ""))
+
+        # Evidence & Why
+        ev_rules = classification.get("evidence", {}).get("rules", []) or []
+        ev_bn = classification.get("evidence", {}).get("bn_features", []) or []
+        if ev_rules or ev_bn or classification["explanations"]:
             lines.append("**Why:**")
-            for e in classification["explanations"]:
+            for e in classification.get("explanations", []):
                 lines.append(f"  - {e}")
-        elif classification["bn_used"]:
-            top = ", ".join([f"{c}:{p:.2f}" for c,p in classification["bn_top"]])
-            lines.append(f"- BN posterior (top): {top}")
+            if ev_rules:
+                lines.append(f"  - Matched tokens (rules): {', '.join(ev_rules)}")
+            if ev_bn:
+                lines.append(f"  - BN features: {', '.join(ev_bn)}")
+
+        # BN table
+        if classification["bn_used"] and classification["bn_top"]:
+            lines.append("")
+            lines.append("_BN posterior (top candidates):_  " +
+                         ", ".join([f"{c}:{p:.2f}" for c,p in classification["bn_top"]]))
+
+        if classification["confidence"] == "uncertain":
+            lines.append("\n_Add more evidence in **Keywords** or **Subjects** (e.g., 'magic', 'space', 'history') to improve confidence._")
     return "\n".join(lines)
 
 # ---------- UI (Two Tabs) ----------
@@ -105,15 +130,7 @@ classify title=Detective Nile; audience=Adult; keywords=detective, murder""")
             else:
                 st.session_state.last_book = book
                 res = classify_book(book, PARENT, DISJOINT, BN)
-                md = [f"**Categories (leaves):** {', '.join(res['categories']) or '—'}",
-                      f"**Closure:** {', '.join(res['closure']) or '—'}"]
-                if res["conflicts"]:
-                    md.append("**Conflicts:** " + ", ".join([f"{a} vs {b}" for a,b in res["conflicts"]]))
-                if res["bn_used"]:
-                    md.append("**BN posterior (top):** " + ", ".join([f"{c}:{p:.2f}" for c,p in res["bn_top"]]))
-                if res["explanations"]:
-                    md.append("**Why:**"); md += [f"- {e}" for e in res["explanations"]]
-                reply = "\n".join(md)
+                reply = render_book_md(book, res)
 
         elif intent == "add":
             book = {
@@ -198,19 +215,8 @@ with tab_catalog:
 
     if do_classify:
         res = classify_book(book, PARENT, DISJOINT, BN)
-        st.session_state.last_book = book
         st.subheader("Result")
-        st.write("**Categories (leaves):** ", ", ".join(res["categories"]) or "—")
-        st.write("**Closure (+ancestors):** ", ", ".join(res["closure"]) or "—")
-        if res["conflicts"]:
-            st.error("Conflicts: " + ", ".join([f"{a} vs {b}" for a,b in res["conflicts"]]))
-        if res["bn_used"]:
-            st.caption("BN posterior (top):")
-            st.table({c: f"{p:.2f}" for c,p in res["bn_top"]})
-        if res["explanations"]:
-            with st.expander("Why? (rules/BN features)"):
-                for e in res["explanations"]:
-                    st.write("• " + e)
+        st.markdown(render_book_md(book, res))
 
     if do_save:
         append_book(book)
