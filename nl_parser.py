@@ -1,7 +1,8 @@
 """
 nl_parser.py — Minimal NL-to-slots parser for the librarian.
-Extracts: intent, title (quoted or 'called/titled'), authors ('by ...'),
-category aliases, audience, year ranges, negative subject, sort, limit, and k=v fallbacks.
+Extracts: intent, title (quoted or 'called/titled' or after 'classify'),
+authors ('by ...'), category aliases, audience, year ranges, negative subject,
+sort, limit, and k=v fallbacks.
 """
 import re
 from typing import Dict, Optional
@@ -86,8 +87,22 @@ def parse_message(msg: str) -> Dict:
     low = t.lower()
     kv = parse_kv(t)
 
-    # explicit intents
-    if re.match(r'^\s*(classify|add|why|search)\b', low):
+    # SPECIAL: "classify <free title or 'quoted'>"
+    m = re.match(r'^\s*classify\s+(.+)$', t, flags=re.IGNORECASE)
+    if m:
+        remainder = m.group(1).strip()
+        # keep existing k=v if present, but try to infer title if not given
+        if "title" not in kv or not kv["title"]:
+            t_guess = extract_title(remainder)
+            if t_guess:
+                kv["title"] = t_guess
+            else:
+                # fallback: treat remainder as a raw title phrase
+                kv["title"] = remainder
+        return {"intent": "classify", "slots": kv}
+
+    # explicit intents (k=v style)
+    if re.match(r'^\s*(add|why|search)\b', low):
         i = low.split()[0]
         title = extract_title(t)
         if title: kv["title"] = title
@@ -102,7 +117,7 @@ def parse_message(msg: str) -> Dict:
 
     # why intent
     if re.search(r'\b(explain|why)\b', low):
-        kv["title"] = kv.get("title") or extract_title(t)  # may be None; UI can use context
+        kv["title"] = kv.get("title") or extract_title(t)
         return {"intent": "why", "slots": kv}
 
     # NL search
