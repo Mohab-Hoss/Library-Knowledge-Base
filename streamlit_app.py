@@ -20,31 +20,22 @@ def _conf_badge(conf: str):
     return colors.get(conf, conf)
 
 def render_card_simple(row, classification):
-    """Minimal card (domain/category/subcat/path)."""
     h = hierarchy_from_classification(classification, CHILD) if classification else None
-    title = row.get('title','')
-    authors = row.get('authors','')
-    lines = []
-    lines.append("**Book Taxonomy Information**")
-    lines.append("```")
-    lines.append(f"Title       : {title}")
+    title = row.get('title',''); authors = row.get('authors','')
+    lines = ["**Book Taxonomy Information**","```",f"Title       : {title}"]
     if authors: lines.append(f"Authors     : {authors}")
     if classification and h:
-        lines.append(f"Domain      : {h['domain']}")
-        lines.append(f"Category    : {h['category']}")
-        lines.append(f"Sub-Category: {h['subcategory']}")
-        lines.append(f"Path        : {h['path']}")
-        lines.append(f"Confidence  : {_conf_badge(classification['confidence'])}")
+        lines += [f"Domain      : {h['domain']}",
+                  f"Category    : {h['category']}",
+                  f"Sub-Category: {h['subcategory']}",
+                  f"Path        : {h['path']}",
+                  f"Confidence  : {_conf_badge(classification['confidence'])}"]
     else:
-        lines.append("Domain      : —")
-        lines.append("Category    : —")
-        lines.append("Sub-Category: —")
-        lines.append("Path        : —")
+        lines += ["Domain      : —","Category    : —","Sub-Category: —","Path        : —"]
     lines.append("```")
     return "\n".join(lines)
 
 def render_book_verbose(row, classification=None):
-    """Detailed card (book meta + categories + evidence)."""
     lines = []
     lines.append(f"**{row.get('title','')}**")
     lines.append(f"- Authors: {row.get('authors','')}")
@@ -80,10 +71,6 @@ def render_book_verbose(row, classification=None):
     return "\n".join(lines)
 
 def render_why_explanation(row, classification):
-    """
-    Compact 'WHY' summary instead of repeating the full card.
-    Shows: title, chosen class(es), confidence, rule tokens or BN features, and taxonomy path.
-    """
     title = row.get('title', '')
     cats = classification.get("categories", [])
     chosen = " / ".join(cats) if cats else "—"
@@ -92,21 +79,16 @@ def render_why_explanation(row, classification):
     ev_bn = classification.get("evidence", {}).get("bn_features", []) or []
     h = hierarchy_from_classification(classification, CHILD) if cats else None
 
-    lines = []
-    lines.append("**Why this classification?**")
-    lines.append("```")
-    lines.append(f"Title     : {title}")
-    lines.append(f"Chosen    : {chosen}")
-    lines.append(f"Confidence: {conf}")
-    if ev_rules:
-        lines.append(f"Rule hit  : tokens → {', '.join(ev_rules)}")
-    if ev_bn:
-        lines.append(f"BN feats  : {', '.join(ev_bn)}")
+    lines = ["**Why this classification?**","```",
+             f"Title     : {title}",
+             f"Chosen    : {chosen}",
+             f"Confidence: {conf}"]
+    if ev_rules: lines.append(f"Rule hit  : tokens → {', '.join(ev_rules)}")
+    if ev_bn:    lines.append(f"BN feats  : {', '.join(ev_bn)}")
     if classification.get("bn_used") and classification.get("bn_top"):
         top = ", ".join([f"{c}:{p:.2f}" for c,p in classification["bn_top"]])
         lines.append(f"BN top    : {top}")
-    if h:
-        lines.append(f"Path      : {h['path']}")
+    if h: lines.append(f"Path      : {h['path']}")
     if classification.get("conflicts"):
         lines.append("Conflicts : " + ", ".join([f"{a} vs {b}" for a,b in classification["conflicts"]]))
     lines.append("```")
@@ -119,17 +101,17 @@ with tab_chat:
     colA, colB = st.columns([1,1])
     with colA:
         st.markdown("**Talk to your librarian.** Examples:")
-        st.code("""tell me about 'Moon Dagger'
+        st.code("""classify Detective Nile
+classify "Moon Dagger"
 why is it fantasy?
 find YA sci-fi space top 3 newest
-list not history after 2015
-classify title=Detective Nile; audience=Adult; keywords=detective, murder""")
+list not history after 2015""")
     with colB:
         SIMPLE = st.toggle("Simple result view", value=True)
 
     if "messages" not in st.session_state:
         st.session_state.messages = [
-            {"role":"assistant","content":"Hi! Ask: `tell me about 'Moon Dagger'` or `why is it fantasy?`"}
+            {"role":"assistant","content":"Hi! Try: `classify Detective Nile` or `classify \"Moon Dagger\"`"}
         ]
     if "last_book" not in st.session_state:
         st.session_state.last_book = None
@@ -156,7 +138,6 @@ classify title=Detective Nile; audience=Adult; keywords=detective, murder""")
                 reply = render_card_simple(row, cls) if SIMPLE else render_book_verbose(row, cls)
 
         elif intent == "why":
-            # Use explicit title if provided; otherwise last_book context
             row = None
             if slots.get("title"):
                 row = find_by_title(slots["title"], read_books())
@@ -167,43 +148,36 @@ classify title=Detective Nile; audience=Adult; keywords=detective, murder""")
             else:
                 st.session_state.last_book = row
                 cls = classify_book(row, PARENT, DISJOINT, BN)
-                # NEW: show compact WHY view (not the full card)
                 reply = render_why_explanation(row, cls)
 
         elif intent == "classify":
-            book = {
-                "title": slots.get("title",""),
-                "authors": slots.get("authors",""),
-                "year": slots.get("year",""),
-                "audience": slots.get("audience","Adult"),
-                "keywords": slots.get("keywords",""),
-                "subjects": slots.get("subjects",""),
-            }
-            if not (book["title"] or book["keywords"] or book["subjects"]):
-                reply = ("Provide at least `title`, `keywords`, or `subjects`.\n"
-                         "Example: `classify title=Moon Dagger; audience=Adult; keywords=magic, quest`")
-            else:
-                st.session_state.last_book = book
-                res = classify_book(book, PARENT, DISJOINT, BN)
-                reply = render_card_simple(book, res) if SIMPLE else render_book_verbose(book, res)
+            # 1) If a title was provided without features, try existing catalog row.
+            title = slots.get("title","").strip()
+            row = find_by_title(title, read_books()) if title else None
 
-        elif intent == "add":
-            book = {
-                "title": slots.get("title",""),
-                "authors": slots.get("authors",""),
-                "year": slots.get("year",""),
-                "audience": slots.get("audience","Adult"),
-                "keywords": slots.get("keywords",""),
-                "subjects": slots.get("subjects",""),
-            }
-            if not book["title"]:
-                reply = ("To add, include at least `title=`.\n"
-                         "Example: `add title=Detective Nile; authors=M. Azmi; year=2021; audience=Adult; "
-                         "keywords=detective, murder; subjects=Crime`")
+            if row and not (slots.get("keywords") or slots.get("subjects")):
+                st.session_state.last_book = row
+                res = classify_book(row, PARENT, DISJOINT, BN)
+                reply = render_card_simple(row, res) if SIMPLE else render_book_verbose(row, res)
             else:
-                append_book(book)
-                st.session_state.last_book = book
-                reply = f"✅ Added **{book['title']}** to catalog."
+                # 2) Otherwise classify whatever fields user supplied (k=v).
+                book = {
+                    "title": slots.get("title",""),
+                    "authors": slots.get("authors",""),
+                    "year": slots.get("year",""),
+                    "audience": slots.get("audience","Adult"),
+                    "keywords": slots.get("keywords",""),
+                    "subjects": slots.get("subjects",""),
+                }
+                # Need at least some evidence if title not found
+                if not (book["keywords"] or book["subjects"]) and not row:
+                    reply = ("I couldn't find that title in the catalog. "
+                             "Please add `keywords` or `subjects` so I have evidence.\n"
+                             "Example: `classify title=New Book; audience=Adult; keywords=magic, quest; subjects=Fantasy`")
+                else:
+                    st.session_state.last_book = book if not row else row
+                    res = classify_book(row or book, PARENT, DISJOINT, BN)
+                    reply = render_card_simple(row or book, res) if SIMPLE else render_book_verbose(row or book, res)
 
         else:  # search
             rows = read_books()
@@ -229,18 +203,7 @@ classify title=Detective Nile; audience=Adult; keywords=detective, murder""")
                     more = "" if len(out) <= 10 else f"\n_Showing 10 of {len(out)} results…_"
                     reply = "\n\n".join(blocks) + more
                 else:
-                    understood = []
-                    if slots.get("terms"): understood.append(f"terms={slots['terms']}")
-                    if slots.get("category") and slots["category"] != "Any": understood.append(f"category={slots['category']}")
-                    if slots.get("audience"): understood.append(f"audience={slots['audience']}")
-                    if slots.get("year_min") is not None or slots.get("year_max") is not None:
-                        understood.append(f"year_range={[slots.get('year_min'), slots.get('year_max')]}")
-                    if slots.get("order","none") != "none": understood.append(f"sort={slots['order']}")
-                    if slots.get("limit"): understood.append(f"limit={slots['limit']}")
-                    if slots.get("neg_subject"): understood.append(f"not_subject={slots['neg_subject']}")
-                    md = []
-                    if understood: md.append("_Query understood:_ " + ", ".join(understood) + "\n")
-                    md += ["| Title | Authors | Year | Audience | Keywords | Subjects |", "|-|-|-|-|-|-|"]
+                    md = ["| Title | Authors | Year | Audience | Keywords | Subjects |","|-|-|-|-|-|-|"]
                     for r in out[:20]:
                         md.append(f"| {r.get('title','')} | {r.get('authors','')} | {r.get('year','')} | "
                                   f"{r.get('audience','')} | {r.get('keywords','')} | {r.get('subjects','')} |")
