@@ -4,7 +4,7 @@ Extracts: intent, title (quoted or 'called/titled'), authors ('by ...'),
 category aliases, audience, year ranges, negative subject, sort, limit, and k=v fallbacks.
 """
 import re
-from typing import Dict, Tuple, Optional
+from typing import Dict, Optional
 
 CATEGORY_ALIASES = {
     "sci fi": "ScienceFiction", "sci-fi": "ScienceFiction", "scifi": "ScienceFiction",
@@ -55,7 +55,6 @@ def find_category(text: str) -> Optional[str]:
     for alias, cat in CATEGORY_ALIASES.items():
         if alias in t:
             return cat
-    # allow direct matches of proper names like "ScienceFiction"
     for c in ["ScienceFiction","Fantasy","ChildrensFantasy","Mystery","CrimeFiction","History","Science"]:
         if _clean(c).replace(" ", "") in t.replace(" ", ""):
             return c
@@ -103,7 +102,7 @@ def parse_message(msg: str) -> Dict:
 
     # why intent
     if re.search(r'\b(explain|why)\b', low):
-        kv["title"] = kv.get("title") or extract_title(t)  # may be None; UI may use context
+        kv["title"] = kv.get("title") or extract_title(t)  # may be None; UI can use context
         return {"intent": "why", "slots": kv}
 
     # NL search
