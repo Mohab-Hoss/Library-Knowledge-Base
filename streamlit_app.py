@@ -20,7 +20,7 @@ def _conf_badge(conf: str):
     return colors.get(conf, conf)
 
 def render_card_simple(row, classification):
-    """Minimal card like your screenshot."""
+    """Minimal card (domain/category/subcat/path)."""
     h = hierarchy_from_classification(classification, CHILD) if classification else None
     title = row.get('title','')
     authors = row.get('authors','')
@@ -44,6 +44,7 @@ def render_card_simple(row, classification):
     return "\n".join(lines)
 
 def render_book_verbose(row, classification=None):
+    """Detailed card (book meta + categories + evidence)."""
     lines = []
     lines.append(f"**{row.get('title','')}**")
     lines.append(f"- Authors: {row.get('authors','')}")
@@ -76,6 +77,39 @@ def render_book_verbose(row, classification=None):
                          ", ".join([f"{c}:{p:.2f}" for c,p in classification["bn_top"]]))
         if classification["confidence"] == "uncertain":
             lines.append("\n_Add more evidence in **Keywords** or **Subjects** (e.g., 'magic', 'space', 'history')._")
+    return "\n".join(lines)
+
+def render_why_explanation(row, classification):
+    """
+    Compact 'WHY' summary instead of repeating the full card.
+    Shows: title, chosen class(es), confidence, rule tokens or BN features, and taxonomy path.
+    """
+    title = row.get('title', '')
+    cats = classification.get("categories", [])
+    chosen = " / ".join(cats) if cats else "—"
+    conf = _conf_badge(classification.get("confidence", ""))
+    ev_rules = classification.get("evidence", {}).get("rules", []) or []
+    ev_bn = classification.get("evidence", {}).get("bn_features", []) or []
+    h = hierarchy_from_classification(classification, CHILD) if cats else None
+
+    lines = []
+    lines.append("**Why this classification?**")
+    lines.append("```")
+    lines.append(f"Title     : {title}")
+    lines.append(f"Chosen    : {chosen}")
+    lines.append(f"Confidence: {conf}")
+    if ev_rules:
+        lines.append(f"Rule hit  : tokens → {', '.join(ev_rules)}")
+    if ev_bn:
+        lines.append(f"BN feats  : {', '.join(ev_bn)}")
+    if classification.get("bn_used") and classification.get("bn_top"):
+        top = ", ".join([f"{c}:{p:.2f}" for c,p in classification["bn_top"]])
+        lines.append(f"BN top    : {top}")
+    if h:
+        lines.append(f"Path      : {h['path']}")
+    if classification.get("conflicts"):
+        lines.append("Conflicts : " + ", ".join([f"{a} vs {b}" for a,b in classification["conflicts"]]))
+    lines.append("```")
     return "\n".join(lines)
 
 # ---------- UI (Two Tabs) ----------
@@ -122,17 +156,19 @@ classify title=Detective Nile; audience=Adult; keywords=detective, murder""")
                 reply = render_card_simple(row, cls) if SIMPLE else render_book_verbose(row, cls)
 
         elif intent == "why":
+            # Use explicit title if provided; otherwise last_book context
             row = None
             if slots.get("title"):
                 row = find_by_title(slots["title"], read_books())
             if not row:
                 row = st.session_state.last_book
             if not row:
-                reply = "Say the title first, e.g., `tell me about 'Moon Dagger'`"
+                reply = "Say the title first, e.g., `tell me about 'Moon Dagger'` then ask `why?`"
             else:
                 st.session_state.last_book = row
                 cls = classify_book(row, PARENT, DISJOINT, BN)
-                reply = render_card_simple(row, cls) if SIMPLE else render_book_verbose(row, cls)
+                # NEW: show compact WHY view (not the full card)
+                reply = render_why_explanation(row, cls)
 
         elif intent == "classify":
             book = {
@@ -186,7 +222,6 @@ classify title=Detective Nile; audience=Adult; keywords=detective, murder""")
                 reply = "No matches. Try: `list children fantasy after 2015` or `find YA sci-fi space top 3 newest`"
             else:
                 if SIMPLE:
-                    # render up to 10 minimal cards
                     blocks = []
                     for r in out[:10]:
                         cls = classify_book(r, PARENT, DISJOINT, BN)
