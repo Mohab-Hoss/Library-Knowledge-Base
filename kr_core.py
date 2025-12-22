@@ -1,7 +1,7 @@
 """
 kr_core.py — Knowledge Representation core for a librarian chatbot.
-Includes: Taxonomy/Frames, FOL closure, Production Rules, Naive Bayes (BN), and search utilities.
-No Streamlit imports here; pure Python so you can present it as your KR code.
+Methods used: Taxonomy/Frames, FOL closure, Production Rules, Naive Bayes (BN).
+Also includes search utilities. No Streamlit imports.
 """
 from pathlib import Path
 from collections import defaultdict
@@ -93,47 +93,55 @@ def append_book(book: Dict) -> None:
             writer.writeheader()
         writer.writerow(book)
 
-# ---------- Production rules ----------
+# ---------- Helpers ----------
 def _normalize_list(x):
     if not x: return []
     if isinstance(x, str):
         return [t.strip().lower() for t in x.split(",") if t.strip()]
     return []
 
+# ---------- Production rules (return matched evidence) ----------
 def rule_mystery(book):
     kws = set(_normalize_list(book.get("keywords"))); subs = set(_normalize_list(book.get("subjects")))
-    if {"murder","detective"} & kws or "crime" in subs:
-        return True, "R1: murder/detective/Crime → Mystery", ["Mystery"]
-    return False, "", []
+    hits = ({"murder","detective"} & kws) | ({"crime"} & subs)
+    if hits:
+        return True, f"R1: {', '.join(sorted(hits))} → Mystery", ["Mystery"], sorted(hits)
+    return False, "", [], []
 
 def rule_scifi(book):
     kws = set(_normalize_list(book.get("keywords"))); subs = set(_normalize_list(book.get("subjects")))
-    if {"spaceship","planet","space"} & kws or "space" in subs:
-        return True, "R2: spaceship/planet/space → ScienceFiction", ["ScienceFiction"]
-    return False, "", []
+    hits = ({"spaceship","planet","space"} & kws) | ({"space"} & subs)
+    if hits:
+        return True, f"R2: {', '.join(sorted(hits))} → ScienceFiction", ["ScienceFiction"], sorted(hits)
+    return False, "", [], []
 
 def rule_fantasy(book):
-    if {"magic","dragon","quest"} & set(_normalize_list(book.get("keywords"))):
-        return True, "R3: magic/dragon/quest → Fantasy", ["Fantasy"]
-    return False, "", []
+    hits = {"magic","dragon","quest"} & set(_normalize_list(book.get("keywords")))
+    if hits:
+        return True, f"R3: {', '.join(sorted(hits))} → Fantasy", ["Fantasy"], sorted(hits)
+    return False, "", [], []
 
 def rule_childrens_fantasy(book):
     aud = (book.get("audience") or "").lower()
     kws = set(_normalize_list(book.get("keywords"))); subs = set(_normalize_list(book.get("subjects")))
-    if aud == "children" and ({"magic","dragon","quest"} & kws or "fantasy" in subs):
-        return True, "R4: Children + fantasy signals → ChildrensFantasy", ["ChildrensFantasy"]
-    return False, "", []
+    hits = ({"magic","dragon","quest"} & kws) | ({"fantasy"} & subs)
+    if aud == "children" and hits:
+        return True, f"R4: audience=children + {', '.join(sorted(hits))} → ChildrensFantasy", ["ChildrensFantasy"], ["children"] + sorted(hits)
+    return False, "", [], []
 
 def rule_history(book):
-    if "history" in set(_normalize_list(book.get("subjects"))):
-        return True, "R5: subject History → History", ["History"]
-    return False, "", []
+    subs = set(_normalize_list(book.get("subjects")))
+    hits = {"history"} & subs
+    if hits:
+        return True, "R5: subject=History → History", ["History"], sorted(hits)
+    return False, "", [], []
 
 def rule_science(book):
     subs = set(_normalize_list(book.get("subjects"))); kws=set(_normalize_list(book.get("keywords")))
-    if "science" in subs or {"physics","biology","chemistry"} & kws:
-        return True, "R6: subject Science / physics/biology/chemistry → Science", ["Science"]
-    return False, "", []
+    hits = ({"science"} & subs) | ({"physics","biology","chemistry"} & kws)
+    if hits:
+        return True, f"R6: {', '.join(sorted(hits))} → Science", ["Science"], sorted(hits)
+    return False, "", [], []
 
 RULES = [rule_mystery, rule_scifi, rule_fantasy, rule_childrens_fantasy, rule_history, rule_science]
 
@@ -154,7 +162,17 @@ def fol_closure(categories: List[str], parent_graph, disjoint_pairs):
         if a in full and b in full: conflicts.append((a,b))
     return sorted(full), conflicts
 
-# ---------- Naive Bayes (as a lightweight Bayesian Network) ----------
+# ---------- Naive Bayes (as a lightweight BN) ----------
+FEATURE_LABELS = {
+    "HasMurder": "keywords include murder/detective",
+    "HasSpaceship": "keywords include spaceship/planet/space OR subject Space",
+    "HasMagic": "keywords include magic/dragon/quest",
+    "SubjectCrime": "subject Crime",
+    "SubjectSpace": "subject Space",
+    "SubjectHistory": "subject History",
+    "AudienceChildren": "audience = Children"
+}
+
 def extract_features(book: Dict):
     kws=set(_normalize_list(book.get("keywords"))); subs=set(_normalize_list(book.get("subjects"))); aud=(book.get("audience") or "").lower()
     return {
@@ -184,34 +202,115 @@ def naive_bayes_category(book: Dict, BN: Dict):
     ranked=sorted(probs.items(), key=lambda x: x[1], reverse=True)
     return ranked, feats
 
+# ---------- Confidence policy ----------
+def _confidence_label(rules_fired: bool, top_prob: float, n_true_feats: int) -> Tuple[str, float]:
+    """
+    Returns ('high'|'medium'|'low'|'uncertain', score)
+    score ~ 1.0 for rules, else = top_prob; 0.0 when uncertain.
+    """
+    if rules_fired:
+        return "high", 1.0
+    if n_true_feats == 0:
+        return "uncertain", 0.0
+    # some evidence present -> medium/low based on posterior
+    if top_prob >= 0.70:
+        return "medium", top_prob
+    if top_prob >= 0.50:
+        return "medium", top_prob
+    return "low", top_prob
+
 # ---------- Master classifier ----------
 def classify_book(book: Dict, parent_graph=None, disjoint_pairs=None, BN=None):
-    """Combine production rules + FOL closure + Naive Bayes backoff."""
+    """
+    Combine production rules + FOL closure + Naive Bayes backoff.
+    Returns a dict with: categories, closure, conflicts, explanations, bn_used, bn_top,
+    evidence (rules, bn_features), confidence, confidence_score.
+    Implements 'uncertain' when NO rules fire and zero BN features are true.
+    """
     if parent_graph is None or disjoint_pairs is None:
         parent_graph, _, disjoint_pairs = load_taxonomy()
     if BN is None:
         BN = load_bn()
 
-    explanations=[]; cats=[]
+    explanations: List[str] = []
+    rules_evidence: List[str] = []
+    cats: List[str] = []
+
     for rule in RULES:
-        ok, exp, newcats = rule(book)
+        ok, exp, newcats, ev = rule(book)
         if ok:
-            explanations.append(exp); cats.extend(newcats)
-    cats=list(dict.fromkeys(cats))  # de-dup, keep order
+            explanations.append(exp)
+            cats.extend(newcats)
+            rules_evidence.extend(ev)
 
-    bn_used=False; bn_top=[]
-    if not cats:
-        bn_used=True
+    # De-dup, keep order
+    cats = list(dict.fromkeys(cats))
+    rules_fired = len(cats) > 0
+
+    bn_used = False
+    bn_top: List[Tuple[str, float]] = []
+    bn_features_true: List[str] = []
+
+    if not rules_fired:
+        bn_used = True
         ranked, feats = naive_bayes_category(book, BN)
-        top1, p1 = ranked[0]
-        cats.append(top1); bn_top=ranked[:3]
-        feat_names = ", ".join([k for k,v in feats.items() if v]) or "∅"
-        explanations.append(f"BN: chose {top1} (p={p1:.2f}) using features: {feat_names}")
-        if len(ranked)>1 and ranked[1][1] > 0.35:
-            cats.append(ranked[1][0])
+        bn_top = ranked[:3]
+        bn_features_true = [FEATURE_LABELS[k] for k, v in feats.items() if v]
+        n_true = len(bn_features_true)
 
+        # Confidence policy
+        top_prob = ranked[0][1] if ranked else 0.0
+        conf_label, conf_score = _confidence_label(False, top_prob, n_true)
+
+        if conf_label == "uncertain":
+            # No evidence at all -> don't pick a category; ask for more info
+            closure, conflicts = [], []
+            explanations.append("Uncertain: no rule or BN feature matched. Please add keywords/subjects (e.g., 'magic', 'space', 'history').")
+            return {
+                "categories": [],
+                "closure": closure,
+                "conflicts": conflicts,
+                "explanations": explanations,
+                "bn_used": True,
+                "bn_top": bn_top,
+                "evidence": {"rules": rules_evidence, "bn_features": bn_features_true},
+                "confidence": conf_label,
+                "confidence_score": conf_score
+            }
+
+        # Otherwise pick the top class
+        top1 = ranked[0][0]
+        cats.append(top1)
+        explanations.append(f"BN: chose {top1} (p={ranked[0][1]:.2f}) using features: "
+                            f"{', '.join(bn_features_true) if bn_features_true else '∅'}")
+        closure, conflicts = fol_closure(cats, parent_graph, disjoint_pairs)
+        return {
+            "categories": cats,
+            "closure": closure,
+            "conflicts": conflicts,
+            "explanations": explanations,
+            "bn_used": True,
+            "bn_top": bn_top,
+            "evidence": {"rules": rules_evidence, "bn_features": bn_features_true},
+            "confidence": conf_label,
+            "confidence_score": conf_score
+        }
+
+    # If rules fired, compute closure; we can still compute a confidence label (high)
     closure, conflicts = fol_closure(cats, parent_graph, disjoint_pairs)
-    return {"categories":cats, "closure":closure, "conflicts":conflicts, "explanations":explanations, "bn_used":bn_used, "bn_top":bn_top}
+    conf_label, conf_score = _confidence_label(True, 1.0, 999)
+
+    return {
+        "categories": cats,
+        "closure": closure,
+        "conflicts": conflicts,
+        "explanations": explanations,
+        "bn_used": bn_used,
+        "bn_top": bn_top,
+        "evidence": {"rules": rules_evidence, "bn_features": bn_features_true},
+        "confidence": conf_label,
+        "confidence_score": conf_score
+    }
 
 # ---------- Utilities for search & lookup ----------
 def find_by_title(title: Optional[str], rows: List[Dict]) -> Optional[Dict]:
