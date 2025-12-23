@@ -105,7 +105,8 @@ with tab_chat:
 classify "Moon Dagger"
 why is it fantasy?
 find YA sci-fi space top 3 newest
-list not history after 2015""")
+list not history after 2015
+classify title=Galaxy Girl; keywords=spaceship; audience=YoungAdult""")
     with colB:
         SIMPLE = st.toggle("Simple result view", value=True)
 
